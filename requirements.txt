@@ -1,0 +1,7 @@
+# Direct runtime dependencies for the public OmniAI checkout.
+# Pins keep the supported top-level environment repeatable. Recreate the
+# virtual environment when changing Python versions or this file.
+Flask==3.1.1
+requests==2.32.4
+python-dotenv==1.1.1
+waitress==3.0.2

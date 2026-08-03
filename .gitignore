@@ -1,0 +1,38 @@
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and packaging output
+build/
+dist/
+*.egg-info/
+
+# Logs and generated diagnostics
+*.log
+test_output.txt
+code_dump.txt
+code_dumper.py
+CHECKPOINT/
+
+# Removed/private artifacts that must not return to the public tree
+omniai-demo/
+scratch/
+proposal.md
+quickpath_for_agents.md
+package.json
+package-lock.json
+.antigravitycli/
