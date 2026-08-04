@@ -183,6 +183,6 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 GitHub Actions runs the same suite on the supported Python versions, installs `requirements.txt`, and runs `pip check`. Tests use placeholders and do not make provider API calls.
 
-## License status
+## License
 
-No `LICENSE` file is included yet. Redistribution and reuse terms are intentionally undecided; do not infer a license grant from this README.
+OmniAI is available under the [MIT License](LICENSE).
