@@ -153,10 +153,13 @@ def construct_payload(model, messages, stream, reasoning_effort):
     model_name = str(model).lower()
     is_anthropic_model = "claude" in model_name
     is_openai_reasoning_model = (
-        model_name.startswith(("o1", "o3", "o4", "gpt-5"))
-        or model_name.startswith(("o1-", "o3-", "o4-"))
+        not is_anthropic_model
+        and any(
+            marker in model_name
+            for marker in ("o1", "o3", "o4", "gpt-5")
+        )
     )
-    is_reasoning_on = reasoning_effort and reasoning_effort != "off"
+    is_reasoning_on = reasoning_effort and reasoning_effort not in {"off", "none"}
 
     # Reasoning-capable public models and Anthropic thinking requests do not
     # accept the ordinary temperature parameter.
@@ -219,18 +222,27 @@ def handle_prompt(args):
 # Keys are model IDs (or prefixes), values are supported reasoning effort levels.
 # This dictionary is used by the /ot command to validate and switch reasoning levels.
 REASONING_MODELS = {
+    "gpt-5.6-sol": ["none", "low", "medium", "high", "xhigh", "max"],
+    "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+    "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+    "gpt-5.5": ["none", "low", "medium", "high", "xhigh"],
+    "gpt-5.4": ["none", "low", "medium", "high", "xhigh"],
+    "gpt-5.4-mini": ["none", "low", "medium", "high", "xhigh"],
+    "gpt-5.4-nano": ["none", "low", "medium", "high", "xhigh"],
     "gpt-5.2": ["none", "low", "medium", "high", "xhigh"],
     "gpt-5": ["low", "medium", "high"],
     "gpt-5.1": ["low", "medium", "high"],
     "o4-mini": ["low", "medium", "high"],
     "o3": ["low", "medium", "high"],
+    "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
+    "claude-sonnet-5": ["off", "low", "medium", "high", "xhigh", "max"],
+    "claude-opus-5": ["off", "low", "medium", "high", "xhigh", "max"],
     "claude-sonnet-4.5": ["off", "on"],
     "claude-sonnet-4-5": ["off", "on"],
     "claude-sonnet-4": ["off", "on"],
     "claude-3-7-sonnet": ["off", "on"],
     "claude-haiku-4.5": ["off", "on"],
     "claude-haiku-4-5": ["off", "on"],
-    "claude-opus-5": ["off", "on"],
     "claude-opus-4.6": ["off", "on"],
     "claude-opus-4-6": ["off", "on"],
     "claude-opus-4.5": ["off", "on"],
@@ -758,7 +770,11 @@ def main():
     parser_prompt.add_argument('model', help='The model ID to use.')
     parser_prompt.add_argument('prompt', help='The prompt to send to the model.')
     parser_prompt.add_argument('--no-stream', dest='stream', action='store_false', help='Disable streaming and wait for the full response.')
-    parser_prompt.add_argument('--reasoning-effort', choices=['low', 'medium', 'high'], help='Set the reasoning effort for the model (if supported).')
+    parser_prompt.add_argument(
+        '--reasoning-effort',
+        choices=['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        help='Set the reasoning effort for the model (if supported).',
+    )
     parser_prompt.set_defaults(func=handle_prompt)
 
     # --- Chat Command ---
@@ -766,7 +782,11 @@ def main():
     add_proxy_url_option(parser_chat)
     parser_chat.add_argument('model', help='The model ID to use for the chat session.')
     parser_chat.add_argument('--system', help='An initial system prompt to set the context.')
-    parser_chat.add_argument('--reasoning-effort', choices=['low', 'medium', 'high'], help='Set the reasoning effort for the model (if supported).')
+    parser_chat.add_argument(
+        '--reasoning-effort',
+        choices=['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        help='Set the reasoning effort for the model (if supported).',
+    )
     parser_chat.set_defaults(func=handle_chat)
 
     args = parser.parse_args()
@@ -778,13 +798,19 @@ def main():
             print_color(Colors.RED, f"Configuration error: {e}")
             return 2
 
-    # Handle reasoning effort suffix in model name (e.g., model-medium)
+    # Handle reasoning effort suffix in model name (e.g., gpt-5.6-sol-max).
     if args.command in ['prompt', 'chat'] and args.model:
-        for suffix in ['-low', '-medium', '-high']:
+        for suffix in ['-minimal', '-none', '-low', '-medium', '-high', '-xhigh', '-max', '-off']:
             if args.model.endswith(suffix):
                 base_model = args.model[:-len(suffix)]
                 # Check if base model matches reasoning-capable families
-                if any(family in base_model for family in ['o1', 'o3', 'o4', 'gpt-5']):
+                if any(
+                    family in base_model.lower()
+                    for family in [
+                        'o1', 'o3', 'o4', 'gpt-5',
+                        'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5',
+                    ]
+                ):
                     # Set reasoning effort if not already specified by flag
                     if not args.reasoning_effort:
                         args.reasoning_effort = suffix[1:]

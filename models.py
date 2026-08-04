@@ -63,14 +63,39 @@ ENDPOINTS = {
 
 # --- Anthropic ---
 
+# Current Claude 5 IDs are dateless, canonical API IDs.  The effort and
+# sampling flags mirror Anthropic's current Messages API behavior: Claude 5
+# models use adaptive thinking/effort and should not receive ordinary sampling
+# controls through this compatibility layer.
+_CLAUDE_5_REASONING_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_CLAUDE_5_FLAGS = {
+    "supports_reasoning_effort": True,
+    "supports_vision": True,
+    "reasoning_effort_values": _CLAUDE_5_REASONING_EFFORTS,
+    "default_reasoning_effort": "high",
+    "supports_thinking_disable": True,
+    "omit_sampling_parameters": True,
+}
+_CLAUDE_FABLE_5_FLAGS = {
+    **_CLAUDE_5_FLAGS,
+    # Fable 5 has always-on thinking and cannot disable it.
+    "supports_thinking_disable": False,
+}
+
 _ANTHROPIC_MODELS = {
+    "claude-opus-5": dict(_CLAUDE_5_FLAGS),
+    "claude-sonnet-5": dict(_CLAUDE_5_FLAGS),
+    "claude-fable-5": dict(_CLAUDE_FABLE_5_FLAGS),
+    # Anthropic documents this pre-4.6 convenience alias for the dated
+    # claude-haiku-4-5-20251001 snapshot.
+    "claude-haiku-4-5": {"supports_vision": True},
+    # Older IDs remain registered for compatibility with existing clients.
     "claude-3-5-sonnet-20241022": {"supports_vision": True},
     "claude-3-7-sonnet-20250219": {"supports_thinking": True, "supports_vision": True},
     "claude-sonnet-4-20250514": {"supports_thinking": True, "supports_vision": True},
     "claude-opus-4-20250514": {"supports_thinking": True, "supports_vision": True},
     "claude-sonnet-4-5-20250929": {"supports_reasoning_effort": True, "supports_vision": True},
     "claude-opus-4-5-20251101": {"supports_reasoning_effort": True, "supports_vision": True},
-    "claude-fable-5": {"supports_reasoning_effort": True, "supports_vision": True},
 }
 
 for model_name, flags in _ANTHROPIC_MODELS.items():
@@ -85,7 +110,56 @@ for model_name, flags in _ANTHROPIC_MODELS.items():
 
 # --- OpenAI ---
 
+_OPENAI_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+_OPENAI_GPT_56_EFFORTS = (*_OPENAI_REASONING_EFFORTS, "max")
+
 _OPENAI_MODELS = {
+    # Current frontier models documented for v1/chat/completions.  Pro
+    # variants are intentionally absent because their current guidance is
+    # Responses-oriented and they are not a safe fit for this proxy route.
+    "gpt-5.6-sol": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_GPT_56_EFFORTS,
+        "default_reasoning_effort": "medium",
+    },
+    "gpt-5.6-terra": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_GPT_56_EFFORTS,
+        "default_reasoning_effort": "medium",
+    },
+    "gpt-5.6-luna": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_GPT_56_EFFORTS,
+        "default_reasoning_effort": "medium",
+    },
+    "gpt-5.5": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_REASONING_EFFORTS,
+        "default_reasoning_effort": "medium",
+    },
+    "gpt-5.4": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_REASONING_EFFORTS,
+        "default_reasoning_effort": "none",
+    },
+    "gpt-5.4-mini": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_REASONING_EFFORTS,
+        "default_reasoning_effort": "none",
+    },
+    "gpt-5.4-nano": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _OPENAI_REASONING_EFFORTS,
+        "default_reasoning_effort": "none",
+    },
+    # Older IDs remain registered for compatibility with existing clients.
     "gpt-4.1": {"supports_vision": True},
     "gpt-5": {"supports_reasoning_effort": True, "supports_vision": True},
     "gpt-5.1": {"supports_reasoning_effort": True, "supports_vision": True},
@@ -162,12 +236,21 @@ def _configured_model_ids() -> List[str]:
     return model_ids
 
 
+_OPENROUTER_CAPABILITIES = {
+    # These exact names and capabilities are present in OpenRouter's current
+    # models API.  Arbitrary env-configured IDs remain intentionally opaque.
+    "moonshotai/kimi-k3": {"supports_reasoning_effort": True, "supports_vision": True},
+    "openai/gpt-5.6-sol": {"supports_reasoning_effort": True, "supports_vision": True},
+    "openai/gpt-5.6-terra": {"supports_reasoning_effort": True, "supports_vision": True},
+    "openai/gpt-5.6-luna": {"supports_reasoning_effort": True, "supports_vision": True},
+    "openai/gpt-5.5": {"supports_reasoning_effort": True, "supports_vision": True},
+    "openai/gpt-5.4": {"supports_reasoning_effort": True, "supports_vision": True},
+    "anthropic/claude-opus-5": {"supports_reasoning_effort": True, "supports_vision": True},
+}
+
+
 def _openrouter_flags(model_id: str) -> Dict[str, Any]:
-    # Preserve the known capability and routing behavior for the default
-    # upstream while leaving arbitrary configured IDs untouched.
-    if model_id.lower() == "moonshotai/kimi-k3":
-        return {"supports_reasoning_effort": True, "supports_vision": True}
-    return {}
+    return dict(_OPENROUTER_CAPABILITIES.get(model_id.lower(), {}))
 
 
 for model_id in _configured_model_ids():

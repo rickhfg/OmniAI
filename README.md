@@ -18,11 +18,11 @@ The proxy authenticates callers with its own Bearer token. Provider API keys sta
 
 | Provider | Environment variable | Upstream route | Registry examples | Notes |
 | --- | --- | --- | --- | --- |
-| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/chat/completions` | `gpt-5`, `gpt-5-mini`, `o3`, `o4-mini` | OpenAI-compatible request building; parameters depend on the selected model. |
-| Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/messages` | `claude-sonnet-4-5-20250929`, `claude-opus-4-5-20251101` | OpenAI-style messages are converted to the Anthropic Messages shape. Omit `temperature` for broad Claude API compatibility, especially when thinking is enabled. |
-| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1/chat/completions` | `moonshotai/kimi-k3` by default | `OPENROUTER_MODELS` can register exact upstream IDs. The current `kimi-k3` adapter forces the upstream `modal/mxfp4` provider with fallbacks disabled. |
+| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/chat/completions` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4` | These current IDs support text/image input and reasoning effort on the existing Chat Completions route. |
+| Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/messages` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` | OpenAI-style messages are converted to the Anthropic Messages shape. The adapter omits `temperature` and `top_p` for current Claude 5 adaptive-thinking requests. |
+| OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1/chat/completions` | `moonshotai/kimi-k3` by default; `openai/gpt-5.5` and `anthropic/claude-opus-5` are current examples | `OPENROUTER_MODELS` registers exact organization-prefixed IDs. The `kimi-k3` adapter forces the upstream `modal/mxfp4` provider with fallbacks disabled. |
 
-OpenAI and Anthropic aliases are defined in `models.py`; OpenRouter IDs are loaded from `OPENROUTER_MODELS` (or its compatibility spelling `OPENROUTER_MODEL_IDS`) and default to `moonshotai/kimi-k3`. Use `/v1/models` against the running checkout rather than assuming that every upstream model name is available.
+OpenAI and Anthropic IDs are defined in `models.py`; OpenRouter IDs are loaded from `OPENROUTER_MODELS` (or its compatibility spelling `OPENROUTER_MODEL_IDS`) and default to the currently listed `moonshotai/kimi-k3`. Use `/v1/models` against the running checkout rather than assuming that every upstream model name is available. For OpenRouter, include the provider namespace, for example `openai/gpt-5.6-sol` rather than bare `gpt-5.6-sol`.
 
 ## Requirements
 
@@ -87,7 +87,7 @@ This payload intentionally uses the common subset of fields. Provider-specific r
 
 ```powershell
 $body = @{
-  model = 'gpt-5'
+  model = 'gpt-5.6-sol'
   messages = @(
     @{ role = 'user'; content = 'Reply with one short sentence.' }
   )
@@ -108,7 +108,7 @@ For a raw streaming response, use `curl.exe` so PowerShell does not alias `curl`
 curl.exe -N http://127.0.0.1:8000/v1/chat/completions `
   -H "Authorization: Bearer $env:PROXY_AUTH_KEY" `
   -H "Content-Type: application/json" `
-  -d '{"model":"claude-sonnet-4-5-20250929","messages":[{"role":"user","content":"Say hello."}],"stream":true}'
+  -d '{"model":"claude-opus-5","messages":[{"role":"user","content":"Say hello."}],"stream":true}'
 ```
 
 ### CLI example
@@ -116,7 +116,9 @@ curl.exe -N http://127.0.0.1:8000/v1/chat/completions `
 ```powershell
 python omniaicli.py status
 python omniaicli.py models
-python omniaicli.py prompt gpt-5 "Summarize the benefits of a local proxy." --no-stream
+python omniaicli.py prompt gpt-5.6-sol "Summarize the benefits of a local proxy." --no-stream
+# After adding openai/gpt-5.5 to OPENROUTER_MODELS:
+python omniaicli.py prompt openai/gpt-5.5 "Summarize the benefits of a local proxy." --no-stream
 ```
 
 The CLI reads `OMNIAI_PROXY_URL` and `PROXY_AUTH_KEY` with `python-dotenv`. It talks to the proxy, not directly to a provider.
@@ -129,7 +131,7 @@ The CLI reads `OMNIAI_PROXY_URL` and `PROXY_AUTH_KEY` with `python-dotenv`. It t
 | `OPENAI_API_KEY` | If using OpenAI | Server-side OpenAI credential. |
 | `ANTHROPIC_API_KEY` | If using Anthropic | Server-side Anthropic credential. |
 | `OPENROUTER_API_KEY` | If using OpenRouter | Server-side OpenRouter credential. |
-| `OPENROUTER_MODELS` | No | Comma-, newline-, or JSON-list-separated exact OpenRouter IDs; defaults to `moonshotai/kimi-k3`. |
+| `OPENROUTER_MODELS` | No | Comma-, newline-, or JSON-list-separated exact OpenRouter IDs, such as `openai/gpt-5.5`; defaults to `moonshotai/kimi-k3`. |
 | `OMNIAI_PROXY_URL` | CLI only | Base URL used by `omniaicli.py`; defaults to `http://localhost:8000`. |
 | `OMNIAI_HOST` / `OMNIAI_PORT` | No | Bind address and port for `run.py`; defaults to `127.0.0.1` and `8000`. |
 | `OMNIAI_DEBUG` | No | Enables Flask debug logging when true; keep false outside local diagnosis. |

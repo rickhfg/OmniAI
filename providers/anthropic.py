@@ -76,18 +76,32 @@ def make_anthropic_compat_builder(provider_name, _standardize_messages_func, _de
         # Handle thinking parameters (legacy vs adaptive)
         original_model = str(md.get("original_model_name", mid)).lower()
         supports_reasoning_effort = md.get("supports_reasoning_effort") or any(
-            v in original_model for v in ["4-5", "4-6", "4-7", "4-8", "4-9", "4.5", "4.6", "4.7", "4.8", "4.9", "fable", "mythos"]
+            v in original_model for v in [
+                "4-5", "4-6", "4-7", "4-8", "4-9", "4.5", "4.6", "4.7",
+                "4.8", "4.9", "fable", "mythos"
+            ]
         )
+        supported_efforts = set(md.get("reasoning_effort_values") or {
+            "low", "medium", "high"
+        })
+        default_effort = md.get("default_reasoning_effort", "high")
 
         if "thinking" in data:
             thinking = data["thinking"]
             if isinstance(thinking, dict):
                 if supports_reasoning_effort:
-                    payload["thinking"] = {"type": "adaptive"}
-                    effort = data.get("reasoning_effort") or thinking.get("effort") or "high"
-                    if effort not in ("low", "medium", "high"):
-                        effort = "high"
-                    payload["output_config"] = {"effort": effort}
+                    effort = data.get("reasoning_effort") or thinking.get("effort") or default_effort
+                    if (
+                        thinking.get("type") == "disabled"
+                        and md.get("supports_thinking_disable")
+                        and effort not in {"xhigh", "max"}
+                    ):
+                        payload["thinking"] = {"type": "disabled"}
+                    else:
+                        payload["thinking"] = {"type": "adaptive"}
+                        if effort not in supported_efforts:
+                            effort = default_effort
+                        payload["output_config"] = {"effort": effort}
                 else:
                     payload["thinking"] = thinking.copy()
                     if payload["thinking"].get("type") == "enabled":
@@ -100,11 +114,14 @@ def make_anthropic_compat_builder(provider_name, _standardize_messages_func, _de
                 payload["thinking"] = thinking
         elif "reasoning_effort" in data or "thinking_budget" in data or data.get("thinking_enabled") is True:
             if supports_reasoning_effort:
-                payload["thinking"] = {"type": "adaptive"}
-                effort = data.get("reasoning_effort") or "high"
-                if effort not in ("low", "medium", "high"):
-                    effort = "high"
-                payload["output_config"] = {"effort": effort}
+                effort = data.get("reasoning_effort") or default_effort
+                if effort == "off" and md.get("supports_thinking_disable"):
+                    payload["thinking"] = {"type": "disabled"}
+                else:
+                    payload["thinking"] = {"type": "adaptive"}
+                    if effort not in supported_efforts:
+                        effort = default_effort
+                    payload["output_config"] = {"effort": effort}
             elif md.get("supports_thinking") or any(v in original_model for v in ["claude-3-7", "claude-4"]):
                 budget = int(data.get("thinking_budget") or 16000)
                 payload["thinking"] = {
@@ -114,7 +131,7 @@ def make_anthropic_compat_builder(provider_name, _standardize_messages_func, _de
                 if payload["max_tokens"] <= budget:
                     payload["max_tokens"] = budget + 4000
 
-        if "top_p" in data:
+        if "top_p" in data and not md.get("omit_sampling_parameters"):
             is_opus_4_8 = "4-8" in original_model or "opus-4-8" in original_model
             if not is_opus_4_8:
                 payload["top_p"] = float(data["top_p"])

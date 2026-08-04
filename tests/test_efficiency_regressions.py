@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 from flask import Response
 
 import app as app_module
+from models import _openrouter_flags, models as registered_models
 from response_utils import aggregate_stream_response
 from streaming import (
     SseChunker,
@@ -19,6 +20,46 @@ from text_processing import _process_non_stream_text_content
 
 PUBLIC_PROVIDERS = {"openai", "anthropic", "openrouter"}
 TEST_PROXY_KEY = "unit-test-proxy-key"
+
+
+class CurrentModelRegistryTests(unittest.TestCase):
+    def test_current_openai_and_anthropic_chat_models_have_verified_capabilities(self):
+        for model_id in (
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
+            "gpt-5.5",
+            "gpt-5.4",
+        ):
+            definition = registered_models[model_id]
+            self.assertEqual("openai", definition["provider"])
+            self.assertTrue(definition["supports_vision"])
+            self.assertTrue(definition["supports_reasoning_effort"])
+            self.assertIn("reasoning_effort_values", definition)
+
+        opus = registered_models["claude-opus-5"]
+        self.assertEqual("anthropic", opus["provider"])
+        self.assertTrue(opus["supports_vision"])
+        self.assertTrue(opus["supports_reasoning_effort"])
+        self.assertEqual("high", opus["default_reasoning_effort"])
+
+    def test_verified_openrouter_examples_have_vision_and_reasoning_flags(self):
+        for model_id in (
+            "moonshotai/kimi-k3",
+            "openai/gpt-5.6-sol",
+            "openai/gpt-5.6-terra",
+            "openai/gpt-5.6-luna",
+            "openai/gpt-5.5",
+            "openai/gpt-5.4",
+            "anthropic/claude-opus-5",
+        ):
+            flags = _openrouter_flags(model_id)
+            self.assertTrue(flags["supports_vision"])
+            self.assertTrue(flags["supports_reasoning_effort"])
+
+    def test_responses_only_pro_variants_are_not_registered(self):
+        self.assertNotIn("gpt-5.5-pro", registered_models)
+        self.assertNotIn("gpt-5.4-pro", registered_models)
 
 
 class _IdentityProcessor:
@@ -343,6 +384,48 @@ class PublicPayloadBuilderTests(unittest.TestCase):
         self.assertEqual("2023-06-01", headers["anthropic-version"])
         self.assertNotIn("Authorization", headers)
         self.assertEqual("Be concise.", payload["system"])
+
+    def test_current_anthropic_payload_uses_adaptive_effort_without_sampling_controls(self):
+        current_model = self._models()["claude-unit"] | {
+            "original_model_name": "claude-opus-5",
+            "supports_reasoning_effort": True,
+            "supports_thinking_disable": True,
+            "reasoning_effort_values": ("low", "medium", "high", "xhigh", "max"),
+            "default_reasoning_effort": "high",
+            "omit_sampling_parameters": True,
+        }
+
+        default_payload, _, _ = self._invoke_builder(
+            "anthropic", "claude-opus-5", self._request("claude-opus-5"), current_model
+        )
+        self.assertNotIn("temperature", default_payload)
+        self.assertNotIn("top_p", default_payload)
+        self.assertNotIn("thinking", default_payload)
+
+        off_request = self._request("claude-opus-5")
+        off_request["reasoning_effort"] = "off"
+        off_payload, _, _ = self._invoke_builder(
+            "anthropic", "claude-opus-5", off_request, current_model
+        )
+        self.assertEqual({"type": "disabled"}, off_payload["thinking"])
+        self.assertNotIn("output_config", off_payload)
+        self.assertNotIn("temperature", off_payload)
+        self.assertNotIn("top_p", off_payload)
+
+    def test_current_openai_payload_uses_registered_reasoning_effort_values(self):
+        current_model = self._models()["gpt-unit"] | {
+            "original_model_name": "gpt-5.4",
+            "supports_reasoning_effort": True,
+            "reasoning_effort_values": ("none", "low", "medium", "high", "xhigh"),
+            "default_reasoning_effort": "none",
+        }
+        request = self._request("gpt-5.4")
+        request["reasoning_effort"] = "unsupported"
+
+        payload, _, _ = self._invoke_builder(
+            "openai", "gpt-5.4", request, current_model
+        )
+        self.assertEqual("none", payload["reasoning_effort"])
 
     def test_openrouter_payload_builder_sets_alias_auth_and_standard_messages(self):
         request = self._request("or-unit")

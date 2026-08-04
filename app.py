@@ -600,9 +600,13 @@ def _build_openai_compatible(data: Dict[str, Any], md: Dict[str, Any], mid: str,
             payload["reasoning_effort"] = "high"
         elif md.get("supports_reasoning_effort"):
             effort = data.get("reasoning_effort")
-            payload["reasoning_effort"] = effort if effort in {
-                "minimal", "low", "medium", "high", "xhigh"
-            } else "medium"
+            supported_efforts = set(md.get("reasoning_effort_values") or {
+                "minimal", "low", "medium", "high", "xhigh", "max"
+            })
+            default_effort = md.get("default_reasoning_effort", "medium")
+            payload["reasoning_effort"] = (
+                effort if effort in supported_efforts else default_effort
+            )
         else:
             payload.pop("reasoning_effort", None)
 
@@ -651,16 +655,29 @@ def build_anthropic(data: Dict[str, Any], md: Dict[str, Any], mid: str):
 
     original_model = str(payload["model"]).lower()
     supports_effort = bool(md.get("supports_reasoning_effort")) or any(
-        marker in original_model for marker in ("4-5", "4-6", "4-7", "4-8", "fable")
+        marker in original_model for marker in (
+            "4-5", "4-6", "4-7", "4-8", "fable", "mythos"
+        )
     )
+    supported_efforts = set(md.get("reasoning_effort_values") or {
+        "low", "medium", "high"
+    })
+    default_effort = md.get("default_reasoning_effort", "high")
     thinking = data.get("thinking")
     if thinking is not None:
         if isinstance(thinking, dict) and supports_effort:
-            effort = data.get("reasoning_effort") or thinking.get("effort") or "high"
-            payload["thinking"] = {"type": "adaptive"}
-            payload["output_config"] = {
-                "effort": effort if effort in {"low", "medium", "high"} else "high"
-            }
+            effort = data.get("reasoning_effort") or thinking.get("effort") or default_effort
+            if (
+                thinking.get("type") == "disabled"
+                and md.get("supports_thinking_disable")
+                and effort not in {"xhigh", "max"}
+            ):
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["thinking"] = {"type": "adaptive"}
+                payload["output_config"] = {
+                    "effort": effort if effort in supported_efforts else default_effort
+                }
         elif isinstance(thinking, dict):
             payload["thinking"] = dict(thinking)
             if payload["thinking"].get("type") == "enabled":
@@ -672,10 +689,13 @@ def build_anthropic(data: Dict[str, Any], md: Dict[str, Any], mid: str):
     elif data.get("thinking_enabled") or "thinking_budget" in data or "reasoning_effort" in data:
         if supports_effort:
             effort = data.get("reasoning_effort", "high")
-            payload["thinking"] = {"type": "adaptive"}
-            payload["output_config"] = {
-                "effort": effort if effort in {"low", "medium", "high"} else "high"
-            }
+            if effort == "off" and md.get("supports_thinking_disable"):
+                payload["thinking"] = {"type": "disabled"}
+            else:
+                payload["thinking"] = {"type": "adaptive"}
+                payload["output_config"] = {
+                    "effort": effort if effort in supported_efforts else default_effort
+                }
         elif md.get("supports_thinking"):
             budget = int(data.get("thinking_budget") or 16000)
             payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
@@ -683,7 +703,7 @@ def build_anthropic(data: Dict[str, Any], md: Dict[str, Any], mid: str):
 
     # Anthropic's compatibility payload deliberately does not forward temperature.
     top_p = _validated_float(data, "top_p")
-    if top_p is not None:
+    if top_p is not None and not md.get("omit_sampling_parameters"):
         payload["top_p"] = top_p
     if "stop" in data:
         payload["stop_sequences"] = data["stop"] if isinstance(data["stop"], list) else [data["stop"]]
