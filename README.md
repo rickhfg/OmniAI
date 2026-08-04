@@ -1,12 +1,13 @@
 # OmniAI
 
-OmniAI is a local Flask proxy that presents a single OpenAI-compatible chat interface while adapting requests and streaming responses to configured upstream providers.
+OmniAI is a local Flask proxy that presents OpenAI-compatible Chat Completions and Responses interfaces while adapting requests and streaming responses to configured upstream providers.
 
 This repository is the public edition. Its supported provider contract and source tree are intentionally limited to OpenAI, Anthropic, OpenRouter, DeepSeek, and Gemini.
 
 ## What it provides
 
 - `POST /v1/chat/completions` with OpenAI-style JSON and SSE responses.
+- `POST /v1/responses` with native OpenAI Responses JSON and semantic SSE for supported upstreams.
 - `GET /v1/models` for the model aliases registered by the checkout.
 - Provider-specific message and stream normalization for the supported matrix below.
 - A small command-line client in `omniaicli.py`.
@@ -18,15 +19,15 @@ The proxy authenticates callers with its own Bearer token. Provider API keys sta
 
 | Provider | Environment variable | Upstream route | Registry examples | Notes |
 | --- | --- | --- | --- | --- |
-| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/chat/completions` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4` | These current IDs support text/image input and reasoning effort on the existing Chat Completions route. |
-| Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/messages` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` | OpenAI-style messages are converted to the Anthropic Messages shape. The adapter omits `temperature` and `top_p` for current Claude 5 adaptive-thinking requests. |
+| OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/chat/completions`, `https://api.openai.com/v1/responses` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4` | Chat Completions is adapted through the existing builder. Responses requests and semantic SSE are passed through natively. |
+| Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/messages` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` | OpenAI-style chat messages are converted to the Anthropic Messages shape. Anthropic does not document a native `/v1/responses` endpoint, so OmniAI does not emulate one. |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1/chat/completions` | `moonshotai/kimi-k3` by default; `openai/gpt-5.5` and `anthropic/claude-opus-5` are current examples | `OPENROUTER_MODELS` registers exact organization-prefixed IDs. The `kimi-k3` adapter forces the upstream `modal/mxfp4` provider with fallbacks disabled. |
-| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/chat/completions` | `deepseek-v4-pro`, `deepseek-v4-flash` | Uses DeepSeek's current V4 Chat Completions IDs. Thinking can be disabled with `reasoning_effort: "off"`; sampling controls are omitted for compatibility with the default thinking mode. |
+| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/chat/completions`, `https://api.deepseek.com/responses` | `deepseek-v4-pro`, `deepseek-v4-flash` | Both V4 models support Chat Completions. Native Responses currently supports only `deepseek-v4-flash`; the proxy preserves its semantic SSE and rejects unsupported stateful fields. |
 | Gemini | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` | Uses Google's official OpenAI compatibility layer. Current 3.6/3.5 models omit deprecated sampling parameters; Gemini 3 reasoning cannot be disabled. |
 
 OpenAI, Anthropic, DeepSeek, and Gemini IDs are defined in `models.py`; OpenRouter IDs are loaded from `OPENROUTER_MODELS` (or its compatibility spelling `OPENROUTER_MODEL_IDS`) and default to the currently listed `moonshotai/kimi-k3`. Use `/v1/models` against the running checkout rather than assuming that every upstream model name is available. For OpenRouter, include the provider namespace, for example `openai/gpt-5.6-sol` rather than bare `gpt-5.6-sol`.
 
-Gemini entries are selected from Google's official [model catalog](https://ai.google.dev/gemini-api/docs/models), [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations), and [OpenAI compatibility guide](https://ai.google.dev/gemini-api/docs/openai). DeepSeek entries follow its official [V4 changelog](https://api-docs.deepseek.com/updates/) and [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/).
+Gemini entries are selected from Google's official [model catalog](https://ai.google.dev/gemini-api/docs/models), [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations), and [OpenAI compatibility guide](https://ai.google.dev/gemini-api/docs/openai). Responses behavior follows the official [OpenAI streaming guide](https://developers.openai.com/api/docs/guides/streaming-responses), DeepSeek [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) and [API reference](https://api-docs.deepseek.com/api/create-response/). Anthropic support follows its documented [API surface](https://platform.claude.com/docs/en/api/overview) and [OpenAI SDK compatibility layer](https://platform.claude.com/docs/en/cli-sdks-libraries/libraries/openai-sdk).
 
 ## Requirements
 
@@ -82,6 +83,7 @@ Content-Type: application/json
 | `GET /` | No | Local liveness check. |
 | `GET /v1/models` | Yes | List registered model aliases from the five public providers. |
 | `POST /v1/chat/completions` | Yes | Supported request path for OpenAI, Anthropic, OpenRouter, DeepSeek, and Gemini aliases. Set `stream` to `true` for SSE. |
+| `POST /v1/responses` | Yes | Native Responses passthrough for OpenAI aliases and `deepseek-v4-flash`. OpenAI stateful continuation fields are preserved; DeepSeek remains stateless. |
 | `GET /dashboard` | No | Static local dashboard. It asks for the proxy key in memory before loading statistics. |
 | `GET /stats` | Yes | Privacy-safe aggregate development diagnostics. |
 
@@ -114,6 +116,28 @@ curl.exe -N http://127.0.0.1:8000/v1/chat/completions `
   -H "Content-Type: application/json" `
   -d '{"model":"claude-opus-5","messages":[{"role":"user","content":"Say hello."}],"stream":true}'
 ```
+
+### Responses API example
+
+The Responses route keeps the upstream schema intact. In particular, its semantic SSE events are not converted into Chat Completions chunks.
+
+```powershell
+$body = @{
+  model = 'deepseek-v4-flash'
+  input = 'Reply with one short sentence.'
+  reasoning = @{ effort = 'high' }
+  stream = $false
+} | ConvertTo-Json -Depth 8
+
+Invoke-RestMethod `
+  -Uri 'http://127.0.0.1:8000/v1/responses' `
+  -Method Post `
+  -Headers @{ Authorization = "Bearer $env:PROXY_AUTH_KEY" } `
+  -ContentType 'application/json' `
+  -Body $body
+```
+
+OpenAI requests may use provider-supported fields such as `previous_response_id` and `store`. DeepSeek's Responses implementation is stateless; OmniAI rejects `previous_response_id`, `conversation`, `store: true`, and `background: true` rather than silently ignoring them.
 
 ### CLI example
 
@@ -157,8 +181,8 @@ The request flow is deliberately small:
 
 1. Flask authenticates the caller and validates the JSON body.
 2. `models.py` resolves a public model alias to a provider, endpoint, and capability flags.
-3. The provider builder converts messages and provider-specific parameters.
-4. The upstream response is normalized to OpenAI-style JSON or SSE by the streaming helpers.
+3. Chat Completions requests pass through a provider builder that converts messages and provider-specific parameters.
+4. Chat responses are normalized to OpenAI-style JSON or SSE; native Responses payloads and semantic SSE are forwarded without Chat Completions conversion.
 
 To propose another public provider, follow the same boundary:
 
@@ -171,7 +195,8 @@ To propose another public provider, follow the same boundary:
 ## Limitations
 
 - The model registry is static Python configuration, not a live catalog. Provider model availability, quotas, and feature support can change independently of this repository.
-- The compatibility surface is intentionally narrower than the full OpenAI API. This public README guarantees chat completions and model listing only.
+- The compatibility surface is intentionally narrower than the full OpenAI API. This public README guarantees Chat Completions, model listing, and native Responses only for OpenAI aliases and `deepseek-v4-flash`.
+- DeepSeek Responses is stateless and does not support image/file inputs. Anthropic, OpenRouter, and Gemini are not exposed through `/v1/responses` unless their upstream services document a compatible native route in the future.
 - Streaming normalization is best effort. Upstream differences in usage, finish reasons, tool calls, images, and reasoning fields can remain observable.
 - Rate limiting, statistics, and recent logs are in-memory. They reset on restart and are not a shared quota or durable observability system across worker processes.
 - `/dashboard` is a public static page, while `/stats` requires the proxy Bearer token. Keep both local or protect them before remote deployment.

@@ -15,6 +15,7 @@ class Model:
     api_key: Optional[str] = None
     endpoint: Optional[str] = None
     chat_endpoint: Optional[str] = None
+    responses_endpoint: Optional[str] = None
     original_model_name: Optional[str] = None
     provider_options: Optional[Dict[str, Any]] = None
     flags: Dict[str, Any] = field(default_factory=dict)
@@ -26,6 +27,7 @@ class Model:
             "api_key": self.api_key,
             "endpoint": self.endpoint,
             "chat_endpoint": self.chat_endpoint,
+            "responses_endpoint": self.responses_endpoint,
             "original_model_name": self.original_model_name or self.name,
             "provider_options": self.provider_options,
             **self.flags,
@@ -58,9 +60,11 @@ GEMINI_API_KEY = _load_key("GEMINI_API_KEY")
 
 ENDPOINTS = {
     "openai": "https://api.openai.com/v1/chat/completions",
+    "openai_responses": "https://api.openai.com/v1/responses",
     "anthropic": "https://api.anthropic.com/v1/messages",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
     "deepseek": "https://api.deepseek.com/chat/completions",
+    "deepseek_responses": "https://api.deepseek.com/responses",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 }
 
@@ -84,6 +88,11 @@ for model_name in ("deepseek-v4-pro", "deepseek-v4-flash"):
         provider="deepseek",
         api_key=DEEPSEEK_API_KEY,
         endpoint=ENDPOINTS["deepseek"],
+        responses_endpoint=(
+            ENDPOINTS["deepseek_responses"]
+            if model_name == "deepseek-v4-flash"
+            else None
+        ),
         flags=dict(_DEEPSEEK_V4_FLAGS),
     ))
 
@@ -176,9 +185,9 @@ _OPENAI_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
 _OPENAI_GPT_56_EFFORTS = (*_OPENAI_REASONING_EFFORTS, "max")
 
 _OPENAI_MODELS = {
-    # Current frontier models documented for v1/chat/completions.  Pro
-    # variants are intentionally absent because their current guidance is
-    # Responses-oriented and they are not a safe fit for this proxy route.
+    # Current frontier models documented for both Chat Completions and
+    # Responses. Separate Responses-only Pro slugs remain intentionally absent
+    # because this registry is also exposed through the chat route.
     "gpt-5.6-sol": {
         "supports_reasoning_effort": True,
         "supports_vision": True,
@@ -241,6 +250,7 @@ for model_name, flags in _OPENAI_MODELS.items():
         provider="openai",
         api_key=OPENAI_API_KEY,
         endpoint=ENDPOINTS["openai"],
+        responses_endpoint=ENDPOINTS["openai_responses"],
         flags=flags,
     ))
 
@@ -251,6 +261,7 @@ add_model(Model(
     provider="openai",
     api_key=OPENAI_API_KEY,
     endpoint=ENDPOINTS["openai"],
+    responses_endpoint=ENDPOINTS["openai_responses"],
     original_model_name="gpt-5",
     flags=_OPENAI_MODELS["gpt-5"],
 ))

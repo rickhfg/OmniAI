@@ -1,4 +1,4 @@
-"""OmniAI's small, authenticated chat-completions proxy."""
+"""OmniAI's small, authenticated multi-provider API proxy."""
 
 import fnmatch
 import hmac
@@ -324,7 +324,7 @@ def _model_config_cache() -> Dict[str, Dict[str, Any]]:
     return _MODEL_CONFIG_CACHE
 
 
-def _get_model_config(model_id: str):
+def _get_model_config(model_id: str, *, required_endpoint: Optional[str] = None):
     definition = _model_config_cache().get(model_id)
     if definition is None:
         return None, _error_response(
@@ -334,6 +334,13 @@ def _get_model_config(model_id: str):
             debug_flag=_diagnostic_logging_enabled(),
         )
     provider = definition.get("provider")
+    if required_endpoint and not definition.get(required_endpoint):
+        return None, _error_response(
+            f"Model '{model_id}' does not support this API route.",
+            400,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
     if provider not in PROVIDERS:
         return None, _error_response(
             f"No handler for provider '{provider}'.",
@@ -888,6 +895,59 @@ def _estimate_input_tokens(messages: Iterable[Dict[str, Any]]) -> int:
     return total_chars // 4
 
 
+def _responses_input_character_count(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, list):
+        return sum(_responses_input_character_count(item) for item in value)
+    if isinstance(value, dict):
+        return sum(
+            _responses_input_character_count(value[key])
+            for key in ("content", "text", "output")
+            if key in value
+        )
+    return 0
+
+
+def _estimate_responses_input_tokens(data: Dict[str, Any]) -> int:
+    total_chars = _responses_input_character_count(data.get("input"))
+    total_chars += _responses_input_character_count(data.get("instructions"))
+    return total_chars // 4
+
+
+def _build_responses_request(
+    data: Dict[str, Any],
+    model_definition: Dict[str, Any],
+    model_id: str,
+):
+    endpoint = model_definition.get("responses_endpoint")
+    if not endpoint:
+        raise ValueError(f"Model '{model_id}' does not support the Responses API.")
+
+    payload = dict(data)
+    payload.pop("api_key", None)
+    payload.pop("proxy_url", None)
+    payload["model"] = model_definition.get("original_model_name", model_id)
+
+    if model_definition.get("provider") == "deepseek":
+        unsupported_stateful_fields = []
+        if payload.get("previous_response_id") is not None:
+            unsupported_stateful_fields.append("previous_response_id")
+        if payload.get("conversation") is not None:
+            unsupported_stateful_fields.append("conversation")
+        if payload.get("store") not in (None, False):
+            unsupported_stateful_fields.append("store")
+        if payload.get("background") not in (None, False):
+            unsupported_stateful_fields.append("background")
+        if unsupported_stateful_fields:
+            fields = ", ".join(sorted(unsupported_stateful_fields))
+            raise ValueError(
+                f"DeepSeek's stateless Responses API does not support: {fields}."
+            )
+
+    return endpoint, payload, _prepare_common_headers(model_definition.get("api_key"))
+
+
 def _finish_request(req_id: Optional[str], output_tokens: int = 0):
     if req_id:
         stats_tracker.finish_request(req_id, output_tokens=output_tokens)
@@ -1074,6 +1134,127 @@ def _handle_chat_completions(data: Dict[str, Any]):
         )
 
 
+def _handle_responses(data: Dict[str, Any]):
+    if not data:
+        return _json_error_response(
+            "JSON body required.",
+            400,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
+    model_id = data.get("model")
+    if not isinstance(model_id, str) or not model_id:
+        return _json_error_response(
+            "Missing 'model' field.",
+            400,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
+
+    model_definition, error_data = _get_model_config(
+        model_id,
+        required_endpoint="responses_endpoint",
+    )
+    if error_data:
+        return jsonify(error_data), error_data["error"]["code"]
+
+    provider_name = model_definition["provider"]
+    req_id = stats_tracker.start_request(
+        model_id,
+        input_tokens=_estimate_responses_input_tokens(data),
+    )
+    user_stream = bool(data.get("stream", False))
+    try:
+        endpoint, payload, headers = _build_responses_request(
+            data,
+            model_definition,
+            model_id,
+        )
+        proxies = None
+        proxy_url = model_definition.get("proxy_url")
+        if proxy_url:
+            proxies = {"https": proxy_url}
+        response, error_response = _make_request(
+            endpoint,
+            payload,
+            headers,
+            stream=user_stream,
+            provider_name=provider_name,
+            proxies=proxies,
+        )
+        if error_response is not None:
+            _finish_request(req_id)
+            return error_response
+
+        if user_stream:
+            content_type = response.headers.get(
+                "Content-Type", "text/event-stream"
+            )
+
+            def stream_body():
+                try:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            yield chunk
+                finally:
+                    response.close()
+                    _finish_request(req_id)
+
+            return Response(
+                stream_with_context(stream_body()),
+                content_type=content_type,
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
+        response_status = response.status_code
+        try:
+            response_data = response.json()
+        finally:
+            response.close()
+        usage = (
+            response_data.get("usage", {})
+            if isinstance(response_data, dict)
+            else {}
+        )
+        output_tokens = usage.get("output_tokens", 0) if isinstance(usage, dict) else 0
+        _finish_request(req_id, output_tokens)
+        return jsonify(response_data), response_status
+    except ValueError as exc:
+        _finish_request(req_id)
+        return _json_error_response(
+            f"Bad request: {exc}",
+            400,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
+    except requests.exceptions.JSONDecodeError:
+        _finish_request(req_id)
+        return _json_error_response(
+            "Provider returned invalid JSON.",
+            502,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
+    except Exception:
+        _finish_request(req_id)
+        if _diagnostic_logging_enabled():
+            _debug(
+                "Responses API processing failed.",
+                traceback.format_exc(),
+                logger_instance=current_app.logger,
+                debug_flag=True,
+            )
+        return _json_error_response(
+            "Failed to process provider response.",
+            500,
+            logger_instance=current_app.logger,
+            debug_flag=_diagnostic_logging_enabled(),
+        )
+
+
 PROVIDERS = load_providers()
 proxy_bp = Blueprint("proxy", __name__, url_prefix="/v1")
 
@@ -1084,6 +1265,14 @@ proxy_bp = Blueprint("proxy", __name__, url_prefix="/v1")
 @handle_json
 def route_chat_completions(data):
     return _handle_chat_completions(data)
+
+
+@proxy_bp.route("/responses", methods=["POST"])
+@auth_required
+@rate_limit_required
+@handle_json
+def route_responses(data):
+    return _handle_responses(data)
 
 
 @proxy_bp.route("/models", methods=["GET"])
@@ -1139,7 +1328,7 @@ def route_stats():
 def root():
     return jsonify({
         "status": "ok",
-        "message": "OmniAI chat proxy is running.",
+        "message": "OmniAI API proxy is running.",
         "timestamp": time.time(),
     })
 

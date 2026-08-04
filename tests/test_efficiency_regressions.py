@@ -37,6 +37,10 @@ class CurrentModelRegistryTests(unittest.TestCase):
             self.assertTrue(definition["supports_vision"])
             self.assertTrue(definition["supports_reasoning_effort"])
             self.assertIn("reasoning_effort_values", definition)
+            self.assertEqual(
+                "https://api.openai.com/v1/responses",
+                definition["responses_endpoint"],
+            )
 
         opus = registered_models["claude-opus-5"]
         self.assertEqual("anthropic", opus["provider"])
@@ -51,6 +55,15 @@ class CurrentModelRegistryTests(unittest.TestCase):
             self.assertTrue(definition["supports_reasoning_effort"])
             self.assertTrue(definition["supports_thinking_disable"])
             self.assertTrue(definition["string_message_content"])
+
+        self.assertEqual(
+            "https://api.deepseek.com/responses",
+            registered_models["deepseek-v4-flash"]["responses_endpoint"],
+        )
+        self.assertNotIn(
+            "responses_endpoint", registered_models["deepseek-v4-pro"]
+        )
+        self.assertNotIn("responses_endpoint", registered_models["claude-opus-5"])
 
         for model_id in (
             "gemini-3.6-flash",
@@ -117,13 +130,26 @@ class _IdentityProcessor:
 class _HttpResponse:
     """Small requests.Response substitute used by all offline route tests."""
 
-    def __init__(self, payload=None, *, status_code=200, lines=()):
+    def __init__(
+        self,
+        payload=None,
+        *,
+        status_code=200,
+        lines=(),
+        chunks=None,
+        content_type="application/json",
+    ):
         self.status_code = status_code
         self.ok = status_code < 400
-        self.headers = {"Content-Type": "application/json"}
+        self.headers = {"Content-Type": content_type}
         self._payload = payload
         self._lines = list(lines)
-        self.content = json.dumps(payload or {}).encode("utf-8")
+        self._chunks = None if chunks is None else list(chunks)
+        self.content = (
+            b"".join(self._chunks)
+            if self._chunks is not None
+            else json.dumps(payload or {}).encode("utf-8")
+        )
         self.text = self.content.decode("utf-8")
         self.closed = False
 
@@ -139,7 +165,10 @@ class _HttpResponse:
 
     def iter_content(self, chunk_size=4096):
         del chunk_size
-        yield self.content
+        if self._chunks is not None:
+            yield from self._chunks
+        else:
+            yield self.content
 
     def close(self):
         self.closed = True
@@ -603,6 +632,35 @@ class PublicApiRouteTests(unittest.TestCase):
             "original_model_name": "provider/model",
         }
 
+    @staticmethod
+    def _openai_responses_model():
+        return {
+            "provider": "openai",
+            "api_key": "unit-openai-key",
+            "endpoint": "http://127.0.0.1/openai/chat/completions",
+            "responses_endpoint": "http://127.0.0.1/openai/responses",
+            "original_model_name": "gpt-upstream",
+        }
+
+    @staticmethod
+    def _deepseek_responses_model():
+        return {
+            "provider": "deepseek",
+            "api_key": "unit-deepseek-key",
+            "endpoint": "http://127.0.0.1/deepseek/chat/completions",
+            "responses_endpoint": "http://127.0.0.1/deepseek/responses",
+            "original_model_name": "deepseek-v4-flash",
+        }
+
+    @staticmethod
+    def _anthropic_model():
+        return {
+            "provider": "anthropic",
+            "api_key": "unit-anthropic-key",
+            "endpoint": "http://127.0.0.1/anthropic/messages",
+            "original_model_name": "claude-opus-5",
+        }
+
     def _request_json(self, model="or-unit", *, stream=False):
         return {
             "model": model,
@@ -613,6 +671,13 @@ class PublicApiRouteTests(unittest.TestCase):
 
     def test_models_requires_bearer_auth(self):
         self.assertEqual(401, self.client.get("/v1/models").status_code)
+        self.assertEqual(
+            401,
+            self.client.post(
+                "/v1/responses",
+                json={"model": "gpt-5.6-sol", "input": "hello"},
+            ).status_code,
+        )
         self.assertEqual(
             401,
             self.client.get(
@@ -709,6 +774,204 @@ class PublicApiRouteTests(unittest.TestCase):
         self.assertTrue(response.data.endswith(b"data: [DONE]\n\n"))
         request_mock.assert_called_once()
         self.assertTrue(request_mock.call_args.kwargs["stream"])
+
+    def test_openai_responses_route_preserves_native_payload_and_response(self):
+        upstream = {
+            "id": "resp-unit",
+            "object": "response",
+            "status": "completed",
+            "model": "gpt-upstream",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hello"}],
+                }
+            ],
+            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+        }
+        request_json = {
+            "model": "gpt-unit",
+            "input": "hello",
+            "previous_response_id": "resp-previous",
+            "store": True,
+            "stream": False,
+        }
+        fake_response = _HttpResponse(upstream)
+        with (
+            patch.object(
+                app_module,
+                "models",
+                {"gpt-unit": self._openai_responses_model()},
+            ),
+            patch.object(app_module, "_MODEL_CONFIG_CACHE", None),
+            patch.object(
+                app_module, "_make_request", return_value=(fake_response, None)
+            ) as request_mock,
+        ):
+            response = self.client.post(
+                "/v1/responses",
+                headers=self._auth_headers(),
+                json=request_json,
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(upstream, response.get_json())
+        request_mock.assert_called_once()
+        self.assertEqual(
+            "http://127.0.0.1/openai/responses",
+            request_mock.call_args.args[0],
+        )
+        sent_payload = request_mock.call_args.args[1]
+        self.assertEqual("gpt-upstream", sent_payload["model"])
+        self.assertEqual("resp-previous", sent_payload["previous_response_id"])
+        self.assertTrue(sent_payload["store"])
+        self.assertEqual(
+            "Bearer unit-openai-key",
+            request_mock.call_args.args[2]["Authorization"],
+        )
+
+    def test_deepseek_responses_stream_is_forwarded_byte_for_byte(self):
+        raw_stream = (
+            b'event: response.created\n'
+            b'data: {"type":"response.created","sequence_number":0}\n\n'
+            b'event: response.output_text.delta\n'
+            b'data: {"type":"response.output_text.delta","sequence_number":1,"delta":"hello"}\n\n'
+            b'event: response.completed\n'
+            b'data: {"type":"response.completed","sequence_number":2}\n\n'
+        )
+        fake_response = _HttpResponse(
+            chunks=[raw_stream[:73], raw_stream[73:]],
+            content_type="text/event-stream",
+        )
+        with (
+            patch.object(
+                app_module,
+                "models",
+                {"deepseek-unit": self._deepseek_responses_model()},
+            ),
+            patch.object(app_module, "_MODEL_CONFIG_CACHE", None),
+            patch.object(
+                app_module, "_make_request", return_value=(fake_response, None)
+            ) as request_mock,
+        ):
+            response = self.client.post(
+                "/v1/responses",
+                headers=self._auth_headers(),
+                json={
+                    "model": "deepseek-unit",
+                    "input": "hello",
+                    "stream": True,
+                },
+            )
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.mimetype.startswith("text/event-stream"))
+        self.assertEqual(raw_stream, response.data)
+        self.assertNotIn(b"[DONE]", response.data)
+        self.assertTrue(fake_response.closed)
+        self.assertEqual(
+            "http://127.0.0.1/deepseek/responses",
+            request_mock.call_args.args[0],
+        )
+        self.assertEqual(
+            "deepseek-v4-flash",
+            request_mock.call_args.args[1]["model"],
+        )
+
+    def test_responses_route_rejects_unsupported_provider_and_deepseek_pro(self):
+        unsupported_models = {
+            "claude-unit": self._anthropic_model(),
+            "deepseek-pro-unit": {
+                **self._deepseek_responses_model(),
+                "responses_endpoint": None,
+                "original_model_name": "deepseek-v4-pro",
+            },
+        }
+        for model_id in unsupported_models:
+            with self.subTest(model_id=model_id):
+                with (
+                    patch.object(app_module, "models", unsupported_models),
+                    patch.object(app_module, "_MODEL_CONFIG_CACHE", None),
+                    patch.object(app_module, "_make_request") as request_mock,
+                ):
+                    response = self.client.post(
+                        "/v1/responses",
+                        headers=self._auth_headers(),
+                        json={"model": model_id, "input": "hello"},
+                    )
+                self.assertEqual(400, response.status_code)
+                self.assertIn(
+                    "does not support", response.get_json()["error"]["message"]
+                )
+                request_mock.assert_not_called()
+
+    def test_deepseek_responses_rejects_stateful_fields_before_transport(self):
+        with (
+            patch.object(
+                app_module,
+                "models",
+                {"deepseek-unit": self._deepseek_responses_model()},
+            ),
+            patch.object(app_module, "_MODEL_CONFIG_CACHE", None),
+            patch.object(app_module, "_make_request") as request_mock,
+        ):
+            response = self.client.post(
+                "/v1/responses",
+                headers=self._auth_headers(),
+                json={
+                    "model": "deepseek-unit",
+                    "input": "hello",
+                    "previous_response_id": "resp-previous",
+                },
+            )
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn(
+            "stateless Responses API",
+            response.get_json()["error"]["message"],
+        )
+        request_mock.assert_not_called()
+
+    def test_responses_stream_request_keeps_upstream_errors_as_json(self):
+        error_response = Response(
+            json.dumps(
+                {
+                    "error": {
+                        "message": "synthetic responses failure",
+                        "type": "proxy_error",
+                        "code": 502,
+                    }
+                }
+            ),
+            status=502,
+            mimetype="application/json",
+        )
+        with (
+            patch.object(
+                app_module,
+                "models",
+                {"gpt-unit": self._openai_responses_model()},
+            ),
+            patch.object(app_module, "_MODEL_CONFIG_CACHE", None),
+            patch.object(
+                app_module,
+                "_make_request",
+                return_value=(None, error_response),
+            ),
+        ):
+            response = self.client.post(
+                "/v1/responses",
+                headers=self._auth_headers(),
+                json={"model": "gpt-unit", "input": "hello", "stream": True},
+            )
+
+        self.assertEqual(502, response.status_code)
+        self.assertTrue(response.mimetype.startswith("application/json"))
+        self.assertEqual(
+            "synthetic responses failure",
+            response.get_json()["error"]["message"],
+        )
 
     def test_anthropic_stream_converter_maps_text_and_stop_reason_offline(self):
         events = [
