@@ -11,7 +11,9 @@ _LOCAL_ENV_FILE = Path(__file__).resolve().with_name(".env")
 if _LOCAL_ENV_FILE.is_file():
     load_dotenv(dotenv_path=_LOCAL_ENV_FILE)
 
-PUBLIC_PROVIDERS = frozenset({"openai", "anthropic", "openrouter"})
+PUBLIC_PROVIDERS = frozenset({
+    "openai", "anthropic", "openrouter", "deepseek", "gemini"
+})
 
 
 def _default_proxy_url():
@@ -143,27 +145,35 @@ def handle_models(args):
 
 def construct_payload(model, messages, stream, reasoning_effort):
     """Constructs the API payload with model-specific parameters."""
-    payload = {
-        "model": model,
-        "messages": messages,
-        "stream": stream,
-        "top_p": 1
-    }
+    payload = {"model": model, "messages": messages, "stream": stream}
 
     model_name = str(model).lower()
     is_anthropic_model = "claude" in model_name
+    is_deepseek_v4 = "deepseek-v4" in model_name
+    is_latest_gemini = any(
+        marker in model_name for marker in ("gemini-3.6", "gemini-3.5-flash-lite")
+    )
+    is_deepseek_thinking = is_deepseek_v4 and reasoning_effort not in {"off", "none"}
     is_openai_reasoning_model = (
-        not is_anthropic_model
+        not is_anthropic_model and not is_deepseek_v4
         and any(
             marker in model_name
-            for marker in ("o1", "o3", "o4", "gpt-5")
+            for marker in ("o1", "o3", "o4", "gpt-5", "gemini-3")
         )
     )
     is_reasoning_on = reasoning_effort and reasoning_effort not in {"off", "none"}
 
+    if not is_deepseek_thinking and not is_latest_gemini:
+        payload["top_p"] = 1
+
     # Reasoning-capable public models and Anthropic thinking requests do not
     # accept the ordinary temperature parameter.
-    if not is_openai_reasoning_model and not (is_anthropic_model and is_reasoning_on):
+    if (
+        not is_deepseek_thinking
+        and not is_latest_gemini
+        and not is_openai_reasoning_model
+        and not (is_anthropic_model and is_reasoning_on)
+    ):
         payload["temperature"] = 1
 
     # Add reasoning_effort or Claude thinking to the payload
@@ -177,6 +187,8 @@ def construct_payload(model, messages, stream, reasoning_effort):
         else:
             # Standard OpenAI-style reasoning effort.
             payload["reasoning_effort"] = reasoning_effort
+    elif is_deepseek_v4 and reasoning_effort in {"off", "none"}:
+        payload["thinking"] = {"type": "disabled"}
 
     return payload
 
@@ -222,6 +234,11 @@ def handle_prompt(args):
 # Keys are model IDs (or prefixes), values are supported reasoning effort levels.
 # This dictionary is used by the /ot command to validate and switch reasoning levels.
 REASONING_MODELS = {
+    "deepseek-v4-pro": ["off", "low", "medium", "high", "xhigh", "max"],
+    "deepseek-v4-flash": ["off", "low", "medium", "high", "xhigh", "max"],
+    "gemini-3.6-flash": ["minimal", "low", "medium", "high"],
+    "gemini-3.5-flash-lite": ["minimal", "low", "medium", "high"],
+    "gemini-3.1-pro-preview": ["minimal", "low", "medium", "high"],
     "gpt-5.6-sol": ["none", "low", "medium", "high", "xhigh", "max"],
     "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
     "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
@@ -807,7 +824,7 @@ def main():
                 if any(
                     family in base_model.lower()
                     for family in [
-                        'o1', 'o3', 'o4', 'gpt-5',
+                        'o1', 'o3', 'o4', 'gpt-5', 'deepseek-v4', 'gemini-3',
                         'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5',
                     ]
                 ):

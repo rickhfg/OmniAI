@@ -8,7 +8,9 @@ import sys
 from typing import Optional
 
 
-PUBLIC_PROVIDERS = frozenset({"openai", "anthropic", "openrouter"})
+PUBLIC_PROVIDERS = frozenset({
+    "openai", "anthropic", "openrouter", "deepseek", "gemini"
+})
 _TRUE_VALUES = frozenset(("1", "true", "yes", "on"))
 _FALSE_VALUES = frozenset(("0", "false", "no", "off"))
 

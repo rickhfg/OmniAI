@@ -6,6 +6,7 @@ from unittest.mock import call, patch
 from flask import Response
 
 import app as app_module
+import omniaicli as cli_module
 from models import _openrouter_flags, models as registered_models
 from response_utils import aggregate_stream_response
 from streaming import (
@@ -18,7 +19,7 @@ from streaming import (
 from text_processing import _process_non_stream_text_content
 
 
-PUBLIC_PROVIDERS = {"openai", "anthropic", "openrouter"}
+PUBLIC_PROVIDERS = {"openai", "anthropic", "openrouter", "deepseek", "gemini"}
 TEST_PROXY_KEY = "unit-test-proxy-key"
 
 
@@ -43,6 +44,24 @@ class CurrentModelRegistryTests(unittest.TestCase):
         self.assertTrue(opus["supports_reasoning_effort"])
         self.assertEqual("high", opus["default_reasoning_effort"])
 
+    def test_current_deepseek_and_google_documented_gemini_models_are_registered(self):
+        for model_id in ("deepseek-v4-pro", "deepseek-v4-flash"):
+            definition = registered_models[model_id]
+            self.assertEqual("deepseek", definition["provider"])
+            self.assertTrue(definition["supports_reasoning_effort"])
+            self.assertTrue(definition["supports_thinking_disable"])
+            self.assertTrue(definition["string_message_content"])
+
+        for model_id in (
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-pro-preview",
+        ):
+            definition = registered_models[model_id]
+            self.assertEqual("gemini", definition["provider"])
+            self.assertTrue(definition["supports_vision"])
+            self.assertTrue(definition["supports_reasoning_effort"])
+
     def test_verified_openrouter_examples_have_vision_and_reasoning_flags(self):
         for model_id in (
             "moonshotai/kimi-k3",
@@ -60,6 +79,31 @@ class CurrentModelRegistryTests(unittest.TestCase):
     def test_responses_only_pro_variants_are_not_registered(self):
         self.assertNotIn("gpt-5.5-pro", registered_models)
         self.assertNotIn("gpt-5.4-pro", registered_models)
+
+
+class PublicCliPayloadTests(unittest.TestCase):
+    def test_deepseek_v4_cli_payload_preserves_sampling_when_thinking_is_disabled(self):
+        payload = cli_module.construct_payload(
+            "deepseek-v4-flash",
+            [{"role": "user", "content": "hello"}],
+            False,
+            "off",
+        )
+        self.assertEqual({"type": "disabled"}, payload["thinking"])
+        self.assertEqual(1, payload["temperature"])
+        self.assertEqual(1, payload["top_p"])
+
+    def test_latest_gemini_cli_payload_omits_deprecated_sampling_parameters(self):
+        payload = cli_module.construct_payload(
+            "gemini-3.6-flash",
+            [{"role": "user", "content": "hello"}],
+            True,
+            "low",
+        )
+        self.assertEqual("low", payload["reasoning_effort"])
+        self.assertNotIn("temperature", payload)
+        self.assertNotIn("top_p", payload)
+        self.assertNotIn("top_k", payload)
 
 
 class _IdentityProcessor:
@@ -327,6 +371,26 @@ class PublicPayloadBuilderTests(unittest.TestCase):
                 "endpoint": "http://127.0.0.1/openrouter",
                 "original_model_name": "provider/model",
             },
+            "deepseek-unit": {
+                "provider": "deepseek",
+                "api_key": "unit-deepseek-key",
+                "endpoint": "http://127.0.0.1/deepseek",
+                "original_model_name": "deepseek-v4-pro",
+                "supports_reasoning_effort": True,
+                "reasoning_effort_values": ("low", "medium", "high", "xhigh", "max"),
+                "supports_thinking_disable": True,
+                "omit_sampling_parameters": True,
+                "string_message_content": True,
+            },
+            "gemini-unit": {
+                "provider": "gemini",
+                "api_key": "unit-gemini-key",
+                "endpoint": "http://127.0.0.1/gemini",
+                "original_model_name": "gemini-3.6-flash",
+                "supports_reasoning_effort": True,
+                "reasoning_effort_values": ("minimal", "low", "medium", "high"),
+                "omit_sampling_parameters": True,
+            },
         }
 
     def _invoke_builder(self, provider_name, model_id, request, model):
@@ -439,6 +503,68 @@ class PublicPayloadBuilderTests(unittest.TestCase):
         self.assertEqual(0.25, payload["temperature"])
         self.assertEqual("hello", payload["messages"][-1]["content"][0]["text"])
 
+    def test_deepseek_v4_payload_uses_text_messages_and_thinking_controls(self):
+        request = self._request("deepseek-unit")
+        request["reasoning_effort"] = "max"
+        payload, endpoint, headers = self._invoke_builder(
+            "deepseek", "deepseek-unit", request, self._models()["deepseek-unit"]
+        )
+
+        self.assertEqual("deepseek-v4-pro", payload["model"])
+        self.assertEqual("http://127.0.0.1/deepseek", endpoint)
+        self.assertEqual("Bearer unit-deepseek-key", headers["Authorization"])
+        self.assertEqual("max", payload["reasoning_effort"])
+        self.assertEqual("hello", payload["messages"][-1]["content"])
+        self.assertNotIn("temperature", payload)
+        self.assertNotIn("top_p", payload)
+
+        off_request = self._request("deepseek-unit")
+        off_request["reasoning_effort"] = "off"
+        off_payload, _, _ = self._invoke_builder(
+            "deepseek", "deepseek-unit", off_request, self._models()["deepseek-unit"]
+        )
+        self.assertEqual({"type": "disabled"}, off_payload["thinking"])
+        self.assertNotIn("reasoning_effort", off_payload)
+        self.assertEqual(0.25, off_payload["temperature"])
+        self.assertEqual(0.9, off_payload["top_p"])
+
+        invalid_request = self._request("deepseek-unit")
+        invalid_request["reasoning_effort"] = []
+        with self.assertRaisesRegex(ValueError, "Invalid 'reasoning_effort'"):
+            self._invoke_builder(
+                "deepseek", "deepseek-unit", invalid_request, self._models()["deepseek-unit"]
+            )
+
+    def test_gemini_payload_uses_google_openai_compat_contract(self):
+        request = self._request("gemini-unit")
+        request["reasoning_effort"] = "medium"
+        request["top_k"] = 40
+        payload, endpoint, headers = self._invoke_builder(
+            "gemini", "gemini-unit", request, self._models()["gemini-unit"]
+        )
+
+        self.assertEqual("gemini-3.6-flash", payload["model"])
+        self.assertEqual("http://127.0.0.1/gemini", endpoint)
+        self.assertEqual("Bearer unit-gemini-key", headers["Authorization"])
+        self.assertEqual("medium", payload["reasoning_effort"])
+        self.assertEqual("hello", payload["messages"][-1]["content"][0]["text"])
+        self.assertNotIn("temperature", payload)
+        self.assertNotIn("top_p", payload)
+        self.assertNotIn("top_k", payload)
+
+        invalid_request = self._request("gemini-unit")
+        invalid_request["reasoning_effort"] = "none"
+        with self.assertRaisesRegex(ValueError, "cannot be disabled"):
+            self._invoke_builder(
+                "gemini", "gemini-unit", invalid_request, self._models()["gemini-unit"]
+            )
+
+        invalid_request["reasoning_effort"] = []
+        with self.assertRaisesRegex(ValueError, "Invalid 'reasoning_effort'"):
+            self._invoke_builder(
+                "gemini", "gemini-unit", invalid_request, self._models()["gemini-unit"]
+            )
+
     def test_provider_registry_contains_only_public_builders(self):
         self.assertEqual(PUBLIC_PROVIDERS, set(app_module.PROVIDERS))
 
@@ -503,7 +629,7 @@ class PublicApiRouteTests(unittest.TestCase):
         self.assertEqual(200, authorized.status_code)
         self.assertEqual("list", authorized.get_json()["object"])
 
-    def test_models_endpoint_exposes_only_the_three_public_provider_families(self):
+    def test_models_endpoint_exposes_only_the_five_public_provider_families(self):
         response = self.client.get("/v1/models", headers=self._auth_headers())
         self.assertEqual(200, response.status_code)
         entries = response.get_json()["data"]

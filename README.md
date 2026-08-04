@@ -2,7 +2,7 @@
 
 OmniAI is a local Flask proxy that presents a single OpenAI-compatible chat interface while adapting requests and streaming responses to configured upstream providers.
 
-This repository is the public edition. Its supported provider contract and source tree are intentionally limited to OpenAI, Anthropic, and OpenRouter.
+This repository is the public edition. Its supported provider contract and source tree are intentionally limited to OpenAI, Anthropic, OpenRouter, DeepSeek, and Gemini.
 
 ## What it provides
 
@@ -21,8 +21,12 @@ The proxy authenticates callers with its own Bearer token. Provider API keys sta
 | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1/chat/completions` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4` | These current IDs support text/image input and reasoning effort on the existing Chat Completions route. |
 | Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com/v1/messages` | `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` | OpenAI-style messages are converted to the Anthropic Messages shape. The adapter omits `temperature` and `top_p` for current Claude 5 adaptive-thinking requests. |
 | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1/chat/completions` | `moonshotai/kimi-k3` by default; `openai/gpt-5.5` and `anthropic/claude-opus-5` are current examples | `OPENROUTER_MODELS` registers exact organization-prefixed IDs. The `kimi-k3` adapter forces the upstream `modal/mxfp4` provider with fallbacks disabled. |
+| DeepSeek | `DEEPSEEK_API_KEY` | `https://api.deepseek.com/chat/completions` | `deepseek-v4-pro`, `deepseek-v4-flash` | Uses DeepSeek's current V4 Chat Completions IDs. Thinking can be disabled with `reasoning_effort: "off"`; sampling controls are omitted for compatibility with the default thinking mode. |
+| Gemini | `GEMINI_API_KEY` | `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `gemini-3.6-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview` | Uses Google's official OpenAI compatibility layer. Current 3.6/3.5 models omit deprecated sampling parameters; Gemini 3 reasoning cannot be disabled. |
 
-OpenAI and Anthropic IDs are defined in `models.py`; OpenRouter IDs are loaded from `OPENROUTER_MODELS` (or its compatibility spelling `OPENROUTER_MODEL_IDS`) and default to the currently listed `moonshotai/kimi-k3`. Use `/v1/models` against the running checkout rather than assuming that every upstream model name is available. For OpenRouter, include the provider namespace, for example `openai/gpt-5.6-sol` rather than bare `gpt-5.6-sol`.
+OpenAI, Anthropic, DeepSeek, and Gemini IDs are defined in `models.py`; OpenRouter IDs are loaded from `OPENROUTER_MODELS` (or its compatibility spelling `OPENROUTER_MODEL_IDS`) and default to the currently listed `moonshotai/kimi-k3`. Use `/v1/models` against the running checkout rather than assuming that every upstream model name is available. For OpenRouter, include the provider namespace, for example `openai/gpt-5.6-sol` rather than bare `gpt-5.6-sol`.
+
+Gemini entries are selected from Google's official [model catalog](https://ai.google.dev/gemini-api/docs/models), [deprecation schedule](https://ai.google.dev/gemini-api/docs/deprecations), and [OpenAI compatibility guide](https://ai.google.dev/gemini-api/docs/openai). DeepSeek entries follow its official [V4 changelog](https://api-docs.deepseek.com/updates/) and [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/).
 
 ## Requirements
 
@@ -76,8 +80,8 @@ Content-Type: application/json
 | Method and path | Auth | Public-edition use |
 | --- | --- | --- |
 | `GET /` | No | Local liveness check. |
-| `GET /v1/models` | Yes | List registered model aliases from the three public providers. |
-| `POST /v1/chat/completions` | Yes | Supported request path for OpenAI, Anthropic, and OpenRouter aliases. Set `stream` to `true` for SSE. |
+| `GET /v1/models` | Yes | List registered model aliases from the five public providers. |
+| `POST /v1/chat/completions` | Yes | Supported request path for OpenAI, Anthropic, OpenRouter, DeepSeek, and Gemini aliases. Set `stream` to `true` for SSE. |
 | `GET /dashboard` | No | Static local dashboard. It asks for the proxy key in memory before loading statistics. |
 | `GET /stats` | Yes | Privacy-safe aggregate development diagnostics. |
 
@@ -131,6 +135,8 @@ The CLI reads `OMNIAI_PROXY_URL` and `PROXY_AUTH_KEY` with `python-dotenv`. It t
 | `OPENAI_API_KEY` | If using OpenAI | Server-side OpenAI credential. |
 | `ANTHROPIC_API_KEY` | If using Anthropic | Server-side Anthropic credential. |
 | `OPENROUTER_API_KEY` | If using OpenRouter | Server-side OpenRouter credential. |
+| `DEEPSEEK_API_KEY` | If using DeepSeek | Server-side DeepSeek credential. |
+| `GEMINI_API_KEY` | If using Gemini | Server-side Google Gemini API credential. |
 | `OPENROUTER_MODELS` | No | Comma-, newline-, or JSON-list-separated exact OpenRouter IDs, such as `openai/gpt-5.5`; defaults to `moonshotai/kimi-k3`. |
 | `OMNIAI_PROXY_URL` | CLI only | Base URL used by `omniaicli.py`; defaults to `http://localhost:8000`. |
 | `OMNIAI_HOST` / `OMNIAI_PORT` | No | Bind address and port for `run.py`; defaults to `127.0.0.1` and `8000`. |

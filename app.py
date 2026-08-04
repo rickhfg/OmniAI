@@ -31,6 +31,8 @@ from converters import (
 )
 from logging_utils import _debug
 from models import models
+from providers.deepseek import get_builder as get_deepseek_builder
+from providers.gemini import get_builder as get_gemini_builder
 from response_utils import _error_response, _json_error_response
 from streaming import (
     _pseudo_stream_non_stream_response,
@@ -44,7 +46,9 @@ from text_processing import (
 )
 
 
-SUPPORTED_PROVIDERS = frozenset({"openai", "anthropic", "openrouter"})
+SUPPORTED_PROVIDERS = frozenset({
+    "openai", "anthropic", "openrouter", "deepseek", "gemini"
+})
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -573,6 +577,13 @@ def _validated_float(data: Dict[str, Any], key: str) -> Optional[float]:
         raise ValueError(f"Invalid '{key}' value.") from exc
 
 
+def _validated_reasoning_effort(data: Dict[str, Any]) -> Optional[str]:
+    effort = data.get("reasoning_effort")
+    if effort is not None and not isinstance(effort, str):
+        raise ValueError("Invalid 'reasoning_effort' value.")
+    return effort
+
+
 def _build_openai_compatible(data: Dict[str, Any], md: Dict[str, Any], mid: str, provider: str):
     endpoint = md.get("endpoint") or md.get("chat_endpoint")
     if not endpoint:
@@ -584,13 +595,27 @@ def _build_openai_compatible(data: Dict[str, Any], md: Dict[str, Any], mid: str,
     payload.pop("api_key", None)
     payload.pop("proxy_url", None)
     payload["model"] = md.get("original_model_name", mid)
-    payload["messages"] = _standardize_messages(data.get("messages", []), provider)
+    standardized_messages = _standardize_messages(data.get("messages", []), provider)
+    if md.get("string_message_content"):
+        standardized_messages = [
+            {**message, "content": _content_to_text(message.get("content"))}
+            for message in standardized_messages
+        ]
+    payload["messages"] = standardized_messages
     payload["stream"] = bool(data.get("stream", False))
 
     if "temperature" in data:
         payload["temperature"] = _validated_float(data, "temperature")
     if "top_p" in data:
         payload["top_p"] = _validated_float(data, "top_p")
+
+    effort = _validated_reasoning_effort(data)
+    omit_sampling = md.get("omit_sampling_parameters") and not (
+        provider == "deepseek" and effort in {"off", "none"}
+    )
+    if omit_sampling:
+        for parameter in ("temperature", "top_p", "top_k"):
+            payload.pop(parameter, None)
 
     if provider == "openai":
         if mid.startswith("gpt-5.1"):
@@ -599,7 +624,6 @@ def _build_openai_compatible(data: Dict[str, Any], md: Dict[str, Any], mid: str,
         if mid == "gpt-5-high":
             payload["reasoning_effort"] = "high"
         elif md.get("supports_reasoning_effort"):
-            effort = data.get("reasoning_effort")
             supported_efforts = set(md.get("reasoning_effort_values") or {
                 "minimal", "low", "medium", "high", "xhigh", "max"
             })
@@ -607,6 +631,29 @@ def _build_openai_compatible(data: Dict[str, Any], md: Dict[str, Any], mid: str,
             payload["reasoning_effort"] = (
                 effort if effort in supported_efforts else default_effort
             )
+        else:
+            payload.pop("reasoning_effort", None)
+
+    elif provider == "deepseek":
+        if effort in {"off", "none"} and md.get("supports_thinking_disable"):
+            payload["thinking"] = {"type": "disabled"}
+            payload.pop("reasoning_effort", None)
+        elif effort is not None:
+            supported_efforts = set(md.get("reasoning_effort_values") or ())
+            if effort not in supported_efforts:
+                raise ValueError(f"Unsupported reasoning_effort for {mid}: {effort}")
+            payload["reasoning_effort"] = effort
+        else:
+            payload.pop("reasoning_effort", None)
+
+    elif provider == "gemini":
+        if effort in {"off", "none"}:
+            raise ValueError(f"Reasoning cannot be disabled for Gemini 3 model {mid}.")
+        if effort is not None:
+            supported_efforts = set(md.get("reasoning_effort_values") or ())
+            if effort not in supported_efforts:
+                raise ValueError(f"Unsupported reasoning_effort for {mid}: {effort}")
+            payload["reasoning_effort"] = effort
         else:
             payload.pop("reasoning_effort", None)
 
@@ -720,12 +767,14 @@ PROVIDERS: Dict[str, Any] = {}
 
 
 def load_providers():
-    """Register only the three supported request builders."""
+    """Register only the five supported request builders."""
     PROVIDERS.clear()
     PROVIDERS.update({
         "openai": build_openai,
         "anthropic": build_anthropic,
         "openrouter": build_openrouter,
+        "deepseek": get_deepseek_builder(_build_openai_compatible),
+        "gemini": get_gemini_builder(_build_openai_compatible),
     })
     return PROVIDERS
 

@@ -1,6 +1,6 @@
 # Contributing to OmniAI
 
-Contributions should preserve the public contract: OpenAI, Anthropic, and OpenRouter are the only supported providers in this edition. Please keep provider credentials, private endpoints, and real user prompts out of commits and tests.
+Contributions should preserve the public contract: OpenAI, Anthropic, OpenRouter, DeepSeek, and Gemini are the supported providers in this edition. Please keep provider credentials, private endpoints, and real user prompts out of commits and tests.
 
 ## Development setup
 
@@ -40,4 +40,4 @@ An adapter being present in the source tree does not make it supported. Do not a
 
 Document behavior users can observe, including model aliases, unsupported parameters, streaming differences, and operational limits. Never commit secrets or unredacted provider responses.
 
-There is currently no `LICENSE` file, so do not assume redistribution terms for copied code or assets.
+Contributions are accepted under the repository's [MIT License](LICENSE).

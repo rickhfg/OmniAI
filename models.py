@@ -52,13 +52,75 @@ def _load_key(env_var_name: str, default: Optional[str] = None) -> Optional[str]
 OPENAI_API_KEY = _load_key("OPENAI_API_KEY")
 ANTHROPIC_API_KEY = _load_key("ANTHROPIC_API_KEY")
 OPENROUTER_API_KEY = _load_key("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = _load_key("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = _load_key("GEMINI_API_KEY")
 
 
 ENDPOINTS = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "anthropic": "https://api.anthropic.com/v1/messages",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",
+    "deepseek": "https://api.deepseek.com/chat/completions",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 }
+
+
+# --- DeepSeek ---
+
+_DEEPSEEK_V4_FLAGS = {
+    "supports_reasoning_effort": True,
+    "reasoning_effort_values": ("low", "medium", "high", "xhigh", "max"),
+    "default_reasoning_effort": "high",
+    "supports_thinking_disable": True,
+    # V4 defaults to thinking mode, where sampling controls have no effect.
+    "omit_sampling_parameters": True,
+    # The official Chat Completions schema documents text message content.
+    "string_message_content": True,
+}
+
+for model_name in ("deepseek-v4-pro", "deepseek-v4-flash"):
+    add_model(Model(
+        name=model_name,
+        provider="deepseek",
+        api_key=DEEPSEEK_API_KEY,
+        endpoint=ENDPOINTS["deepseek"],
+        flags=dict(_DEEPSEEK_V4_FLAGS),
+    ))
+
+
+# --- Gemini ---
+
+_GEMINI_REASONING_EFFORTS = ("minimal", "low", "medium", "high")
+_GEMINI_MODELS = {
+    "gemini-3.6-flash": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _GEMINI_REASONING_EFFORTS,
+        "default_reasoning_effort": "medium",
+        "omit_sampling_parameters": True,
+    },
+    "gemini-3.5-flash-lite": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _GEMINI_REASONING_EFFORTS,
+        "default_reasoning_effort": "minimal",
+        "omit_sampling_parameters": True,
+    },
+    "gemini-3.1-pro-preview": {
+        "supports_reasoning_effort": True,
+        "supports_vision": True,
+        "reasoning_effort_values": _GEMINI_REASONING_EFFORTS,
+    },
+}
+
+for model_name, flags in _GEMINI_MODELS.items():
+    add_model(Model(
+        name=model_name,
+        provider="gemini",
+        api_key=GEMINI_API_KEY,
+        endpoint=ENDPOINTS["gemini"],
+        flags=flags,
+    ))
 
 
 # --- Anthropic ---
